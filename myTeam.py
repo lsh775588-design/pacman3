@@ -438,6 +438,8 @@ class ReflexCaptureAgent(CaptureAgent):
         defendingFoodLeft = len(self.getFoodYouAreDefending(gameState).asList())
         if self.shouldLateAttack(gameState, score, defendingFoodLeft):
             return False
+        if self.shouldAttackWhileTeammateMarked(gameState, score, defendingFoodLeft):
+            return False
         if self.defaultRole == 'defense':
             return True
         keepOneBack = self.defaultRole == 'defense' or score >= 2 or foodLeft <= 4 or defendingFoodLeft <= 5
@@ -456,6 +458,69 @@ class ReflexCaptureAgent(CaptureAgent):
         if score == 0 and timeLeft < 250:
             return True
         return False
+
+    def shouldAttackWhileTeammateMarked(self, gameState, score, defendingFoodLeft):
+        if self.defaultRole != 'defense' or defendingFoodLeft <= 5 or score >= 3:
+            return False
+        if self.missingFoodTarget is not None or self.getVisibleInvaders(gameState):
+            return False
+        if self.estimatedInvaderPositions(gameState):
+            return False
+
+        myPos = gameState.getAgentPosition(self.index)
+        if myPos is None:
+            return False
+        teammate = self.getTeammateIndex(gameState)
+        if teammate is None:
+            return False
+        teammatePos = gameState.getAgentPosition(teammate)
+        if teammatePos is None:
+            return False
+
+        myBoundaryDistance = self.distanceToHome(gameState, myPos)
+        teammateBoundaryDistance = self.distanceToHome(gameState, teammatePos)
+        myGhostDistance = self.closestActiveGhostDistanceFrom(gameState, myPos)
+        teammateGhostDistance = self.closestActiveGhostDistanceFrom(gameState, teammatePos)
+        if teammateGhostDistance is None:
+            return False
+
+        teammatePinned = teammateBoundaryDistance <= 4 and teammateGhostDistance <= 4
+        if not teammatePinned:
+            return False
+        if myBoundaryDistance > 8:
+            return False
+        if myGhostDistance is not None and myGhostDistance <= teammateGhostDistance + 2:
+            return False
+        return self.isBetterFreeAttacker(gameState, myPos, teammatePos,
+                                         myGhostDistance, teammateGhostDistance)
+
+    def getTeammateIndex(self, gameState):
+        for teammate in self.getTeam(gameState):
+            if teammate != self.index:
+                return teammate
+        return None
+
+    def closestActiveGhostDistanceFrom(self, gameState, pos):
+        distances = []
+        for enemyIndex in self.getOpponents(gameState):
+            enemy = gameState.getAgentState(enemyIndex)
+            enemyPos = enemy.getPosition()
+            if enemyPos is not None and not enemy.isPacman and enemy.scaredTimer <= 2:
+                distances.append(self.getMazeDistance(pos, enemyPos))
+        return min(distances) if distances else None
+
+    def isBetterFreeAttacker(self, gameState, myPos, teammatePos,
+                             myGhostDistance, teammateGhostDistance):
+        foodList = self.getFood(gameState).asList()
+        if not foodList:
+            return False
+        myFoodDistance = min(self.getMazeDistance(myPos, food) for food in foodList)
+        teammateFoodDistance = min(self.getMazeDistance(teammatePos, food) for food in foodList)
+        mySafety = myGhostDistance if myGhostDistance is not None else 8
+        teammateSafety = teammateGhostDistance if teammateGhostDistance is not None else 8
+        myScore = -self.distanceToHome(gameState, myPos) - 0.5 * myFoodDistance + 2.0 * min(mySafety, 8)
+        teammateScore = -self.distanceToHome(gameState, teammatePos) - 0.5 * teammateFoodDistance + 2.0 * min(teammateSafety, 8)
+        return myScore >= teammateScore + 2.0
 
     def allTeamAgentsHome(self, gameState):
         for teammate in self.getTeam(gameState):
