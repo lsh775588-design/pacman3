@@ -37,10 +37,12 @@ class ReflexCaptureAgent(CaptureAgent):
         self.opponentBeliefs = {}
         self.legalPositions = []
         self.deadEndDepth = {}
+        self.recentPositions = []
 
     def registerInitialState(self, gameState):
         CaptureAgent.registerInitialState(self, gameState)
         self.start = gameState.getAgentPosition(self.index)
+        self.recentPositions = [self.start]
         self.walls = gameState.getWalls()
         self.legalPositions = self._computeLegalPositions(gameState)
         self.deadEndDepth = self._computeDeadEndDepths(gameState)
@@ -81,6 +83,7 @@ class ReflexCaptureAgent(CaptureAgent):
 
         if choice not in legal:
             choice = self.safeFallbackAction(gameState, legal)
+        self.recordRecentPosition(gameState, choice)
         self.previousDefendingFood = self.getFoodYouAreDefending(gameState).asList()
         return choice
 
@@ -344,6 +347,7 @@ class ReflexCaptureAgent(CaptureAgent):
             'offense:estimatedGhostDistance': 140.0,
             'offense:deadEndRisk': -90.0,
             'offense:capsuleDistance': -120.0,
+            'offense:loopPenalty': -80.0,
             'offense:stop': -300.0,
             'offense:reverse': -6.0,
             'return:successorScore': 2400.0,
@@ -353,6 +357,7 @@ class ReflexCaptureAgent(CaptureAgent):
             'return:estimatedGhostDistance': 240.0,
             'return:deadEndRisk': -130.0,
             'return:capsuleDistance': -60.0,
+            'return:loopPenalty': -80.0,
             'return:stop': -300.0,
             'return:reverse': -10.0,
             'defense:onDefense': 260.0,
@@ -363,6 +368,7 @@ class ReflexCaptureAgent(CaptureAgent):
             'defense:missingFoodTargetDistance': -180.0,
             'defense:estimatedInvaderDistance': -130.0,
             'defense:boundaryPatrolDistance': -100.0,
+            'defense:loopPenalty': -70.0,
             'defense:stop': -220.0,
             'defense:reverse': -8.0,
         })
@@ -579,6 +585,35 @@ class ReflexCaptureAgent(CaptureAgent):
         reverse = Directions.REVERSE[currentDirection]
         if action == reverse:
             features['reverse'] = 1
+        loopPenalty = self.getLoopPenalty(gameState, action)
+        if loopPenalty:
+            features['loopPenalty'] = loopPenalty
+
+    def getLoopPenalty(self, gameState, action):
+        if len(self.recentPositions) < 4:
+            return 0
+        if self.getVisibleInvaders(gameState) or self.missingFoodTarget is not None:
+            return 0
+        try:
+            successor = self.getSuccessor(gameState, action)
+            nextPos = nearestPoint(successor.getAgentState(self.index).getPosition())
+        except Exception:
+            return 0
+        recent = self.recentPositions[-5:]
+        visits = recent.count(nextPos)
+        if visits < 2:
+            return 0
+        return visits
+
+    def recordRecentPosition(self, gameState, action):
+        try:
+            successor = gameState.generateSuccessor(self.index, action)
+            pos = successor.getAgentState(self.index).getPosition()
+            if pos is not None:
+                self.recentPositions.append(nearestPoint(pos))
+                self.recentPositions = self.recentPositions[-8:]
+        except Exception:
+            pass
 
     def getVisibleInvaders(self, gameState):
         enemies = [gameState.getAgentState(i) for i in self.getOpponents(gameState)]
