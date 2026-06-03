@@ -38,6 +38,7 @@ class ReflexCaptureAgent(CaptureAgent):
         self.legalPositions = []
         self.deadEndDepth = {}
         self.recentPositions = []
+        self.interceptTarget = None
 
     def registerInitialState(self, gameState):
         CaptureAgent.registerInitialState(self, gameState)
@@ -71,7 +72,9 @@ class ReflexCaptureAgent(CaptureAgent):
             self.updateOpponentBeliefs(gameState)
             self._updateMissingFoodTarget(gameState)
             role = self.applyRoleHysteresis(gameState, self.selectRole(gameState))
+            self.interceptTarget = None
             if role == 'defense':
+                self.interceptTarget = self.computeInterceptionTarget(gameState)
                 self.updatePatrolTarget(gameState)
             actions = self._candidateActions(gameState, legal, role)
             choice = self.getPriorityAttackAction(gameState, actions, role)
@@ -366,6 +369,7 @@ class ReflexCaptureAgent(CaptureAgent):
             'defense:tooCloseToInvader': -160.0,
             'defense:scaredBlockDistance': -260.0,
             'defense:missingFoodTargetDistance': -180.0,
+            'defense:interceptTargetDistance': -240.0,
             'defense:estimatedInvaderDistance': -130.0,
             'defense:boundaryPatrolDistance': -100.0,
             'defense:loopPenalty': -70.0,
@@ -616,6 +620,9 @@ class ReflexCaptureAgent(CaptureAgent):
         myPos = myState.getPosition()
 
         features['onDefense'] = 0 if myState.isPacman else 1
+        if self.interceptTarget is not None:
+            features['interceptTargetDistance'] = self.getMazeDistance(myPos, self.interceptTarget)
+
         invaders = self.getVisibleInvaders(successor)
         if invaders:
             nearestInvaderDistance = min(
@@ -821,6 +828,8 @@ class ReflexCaptureAgent(CaptureAgent):
     def getBoundaryPatrolTarget(self, gameState, myPos):
         if self.missingFoodTarget is not None:
             return self.missingFoodTarget
+        if self.interceptTarget is not None:
+            return self.interceptTarget
         return self.patrolTarget
 
     def getScaredBlockTarget(self, gameState, invaderPositions):
@@ -835,6 +844,89 @@ class ReflexCaptureAgent(CaptureAgent):
                 foodYGap = min(abs(point[1] - food[1]) for food in defendingFood)
             scored.append((invaderYGap, foodYGap, point[1], point))
         return min(scored)[3]
+
+    def computeInterceptionTarget(self, gameState):
+        myPos = gameState.getAgentPosition(self.index)
+        if myPos is None or self.missingFoodTarget is not None:
+            return None
+
+        invaderSources = self.likelyInvaderSources(gameState)
+        defendingFood = self.getFoodYouAreDefending(gameState).asList()
+        if not invaderSources or not defendingFood:
+            return None
+
+        best = None
+        for source in invaderSources[:4]:
+            if self.outOfTime():
+                break
+            closeFoods = sorted(defendingFood,
+                                key=lambda food: self.getMazeDistance(source, food))[:4]
+            for food in closeFoods:
+                if self.outOfTime():
+                    break
+                pathDistance = self.getMazeDistance(source, food)
+                if pathDistance <= 1:
+                    continue
+
+                blockCandidates = set(self.patrolPoints)
+                blockCandidates.update(self.legalNeighbors(food, includeStop=False))
+                blockCandidates.update(self.legalNeighbors(source, includeStop=False))
+
+                for point in blockCandidates:
+                    if self.outOfTime():
+                        break
+                    if point == food or not self.isHomeSide(gameState, point):
+                        continue
+                    enemyToPoint = self.getMazeDistance(source, point)
+                    if enemyToPoint <= 0:
+                        continue
+                    pointToFood = self.getMazeDistance(point, food)
+                    detour = enemyToPoint + pointToFood - pathDistance
+                    if detour > 4:
+                        continue
+
+                    myDistance = self.getMazeDistance(myPos, point)
+                    arrivalGap = myDistance - enemyToPoint
+                    deadEnd = self.deadEndDepth.get(nearestPoint(point), 0)
+                    recentPressure = self.recentFoodPressure(point)
+                    boundaryBonus = 1 if point in self.patrolPoints else 0
+
+                    score = (3.0 * max(0, arrivalGap) +
+                             2.0 * detour +
+                             1.5 * deadEnd +
+                             0.35 * myDistance -
+                             1.5 * recentPressure -
+                             boundaryBonus)
+                    key = (score, myDistance, point[1], point[0], point)
+                    if best is None or key < best:
+                        best = key
+
+        return best[-1] if best is not None else None
+
+    def likelyInvaderSources(self, gameState):
+        sources = []
+        seen = set()
+        for opponent in self.getOpponents(gameState):
+            enemy = gameState.getAgentState(opponent)
+            enemyPos = enemy.getPosition()
+            if enemyPos is not None:
+                if enemy.isPacman and self.isHomeSide(gameState, enemyPos):
+                    seen.add(enemyPos)
+                    sources.append(enemyPos)
+                continue
+
+            for pos in self.mostLikelyOpponentPositions(opponent, limit=4):
+                if pos in seen or not self.isHomeSide(gameState, pos):
+                    continue
+                seen.add(pos)
+                sources.append(pos)
+        return sources
+
+    def recentFoodPressure(self, point):
+        pressure = 0.0
+        for food, ttl in self.recentMissingFood:
+            pressure += (ttl / 20.0) / (1.0 + abs(point[1] - food[1]))
+        return pressure
 
     def updatePatrolTarget(self, gameState):
         if self.missingFoodTarget is not None or not self.patrolPoints:
